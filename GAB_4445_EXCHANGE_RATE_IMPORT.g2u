@@ -1,0 +1,105 @@
+Program.Sub.ScreenSU.Start
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+
+Variable.UDT.Currencies.Define("ISO_CODE",String,ISO_CODE)
+Variable.UDT.Currencies.Define("FACTOR",String,FACTOR)
+Variable.UDT.Currencies.Define("CTLG_FLAG",String,CTLG_FLAG)
+Variable.UDT.Currencies.Define("ROUND_FLAG",String,ROUND_FLAG)
+Variable.UDT.Currencies.Define("ROUND_TO",String,ROUND_TO)
+Variable.UDT.Currencies.Define("USED",String,USED)
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'RDF
+'January 18th, 2015
+'This script is designed to run in the task scheduler of Global Shop
+'And update the exchange rates for all currencies setup in the system.
+F.Intrinsic.Control.CallSub(Getisocodes)
+F.Intrinsic.Control.End
+
+Program.Sub.Main.End
+
+Program.Sub.getISOCodes.Start
+F.Intrinsic.Control.Try
+	F.ODBC.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+	V.Local.sdateexists.Declare(String)
+	V.Local.ssql.Declare(String)
+	V.Local.dnewdate.Declare(Date)
+	v.Local.i.Declare(long,0)
+	V.Local.dnewdate.Set(V.Ambient.Date)
+	F.Intrinsic.String.Build("SELECT DATE_EXCH_RATE FROM V_EXCHANGE_RATES WHERE DATE_EXCH_RATE='{0}'",V.local.dnewdate.PervasiveDate,V.Local.ssql)
+	V.Local.sval.Declare(String)
+	
+	'Get default company currency
+	V.Local.sDCC.Declare(string)
+	F.ODBC.Connection!conx.EXECUTEANDRETURN("SELECT text1 FROM OP_HEADER WHERE ID='000000' AND SEQUENCE='0000'",V.Local.sDCC)
+	
+	'Grab currencies, and download the conversions
+	V.Local.svalues.Declare
+	V.Local.surl.Declare
+	V.Local.sdatevals.Declare
+	V.Local.smonth.Declare
+	V.Local.sDAY.Declare
+	V.Local.syear.Declare
+	V.Local.sformatteddate.Declare
+	V.Local.scheck.Declare
+	v.Local.sxpath.Declare
+	v.Local.sret.Declare
+	v.Local.frate.Declare
+	v.Local.sAPIKey.Declare
+	v.Local.sAPIfile.Declare
+	f.Intrinsic.String.Concat(v.Caller.GasDir,"\GAB_4445_APIKEY.txt",v.Local.sAPIfile)
+	
+	f.Intrinsic.File.File2String(v.Local.sAPIfile,v.Local.sAPIKey)
+	
+	'Create the string with all currencies being used
+	f.Intrinsic.String.Format(v.Local.dnewdate,"YYYYMMDD",v.Local.sformatteddate)
+	'fixed URL based on troubleshooting with Caragh  8/14/18
+	V.Local.surl.Set("http://data.fixer.io/api/latest?access_key={0}&base={1}&SYMBOLS=")
+	F.Intrinsic.String.Build(v.Local.surl,v.Local.sAPIKey.trim,v.Local.sDCC.Trim,v.Local.surl)
+	
+	f.Data.DataTable.CreateFromSQL("dtCurr","conx","select * from COMPANY_CURRENCY",true)
+	f.Intrinsic.Control.For(v.Local.i,0,v.DataTable.dtCurr.RowCount--,1)
+		f.Intrinsic.Control.If(v.Local.i,=,0)
+			f.Intrinsic.String.Concat(v.Local.surl,v.DataTable.dtCurr(v.Local.i).ISO_CODE!FIELDVALTRIM,v.Local.surl)
+		F.Intrinsic.Control.Else
+			f.Intrinsic.String.Concat(v.Local.surl,",",v.DataTable.dtCurr(v.Local.i).ISO_CODE!FIELDVALTRIM,v.Local.surl)
+		F.Intrinsic.Control.EndIf
+	f.Intrinsic.Control.Next(v.Local.i)
+
+	
+	'changed the end of the URL based on troubleshoooting with Caragh 8/14/18
+	f.Intrinsic.String.Build("{0},&format=1",v.Local.surl,v.Local.surl)
+	
+	'Now we have our string to send off to the API
+	f.Communication.REST.Get(v.Local.surl)
+	'Loop Through
+	f.Intrinsic.Control.For(v.Local.i,0,v.DataTable.dtCurr.RowCount--,1)
+		f.Intrinsic.Control.If(v.DataTable.dtCurr(v.Local.i).ISO_CODE!FIELDVALTRIM,<>,v.Local.sDCC.Trim)
+			f.Intrinsic.String.Concat("/json/rates/",v.DataTable.dtCurr(v.Local.i).ISO_CODE!FIELDVALTRIM,v.Local.sxpath)
+			f.Communication.REST.SetProperty("XPATH",v.Local.sxpath.Trim)
+			f.Communication.REST.ReadProperty("XTEXT",V.Local.sret)
+			F.Intrinsic.String.Build("SELECT * FROM EXCHANGE_RATES WHERE DATE_EXCH_RATE='{0}' AND FROM_ISO_CODE='{1}' AND TO_ISO_CODE='{2}'",V.Local.sformatteddate,v.DataTable.dtCurr(v.Local.i).ISO_CODE!FIELDVALTRIM,V.local.sdcc,V.Local.ssql)
+			F.ODBC.Connection!conx.ExecuteAndReturn(V.Local.ssql,V.Local.scheck)
+			F.Intrinsic.Control.If(V.Local.scheck.Trim,=,"")
+				F.Intrinsic.String.Build("INSERT INTO EXCHANGE_RATES (DATE_EXCH_RATE,TO_ISO_CODE,FROM_ISO_CODE,EXCHANGE_RATE) VALUES ('{0}','{1}','{2}','{3}')",V.Local.sformatteddate,v.DataTable.dtCurr(v.Local.i).ISO_CODE!FIELDVALTRIM,V.Local.sDCC,v.Local.sret,V.Local.ssql)
+				F.ODBC.Connection!conx.Execute(V.Local.ssql)
+				'Do inverse
+				f.Intrinsic.Math.Div(1,v.Local.sret,v.Local.frate)
+				F.Intrinsic.String.Build("INSERT INTO EXCHANGE_RATES (DATE_EXCH_RATE,FROM_ISO_CODE,TO_ISO_CODE,EXCHANGE_RATE) VALUES ('{0}','{1}','{2}','{3}')",V.Local.sformatteddate,v.DataTable.dtCurr(v.Local.i).ISO_CODE!FIELDVALTRIM,V.Local.sDCC,v.Local.frate,V.Local.ssql)
+				F.ODBC.Connection!conx.Execute(V.Local.ssql)
+			F.Intrinsic.Control.EndIf
+		F.Intrinsic.Control.EndIf
+	f.Intrinsic.Control.Next(v.Local.i)
+	F.ODBC.Connection!conx.Close
+F.Intrinsic.Control.Catch
+	F.Intrinsic.UI.Msgbox(V.Ambient.ErrorDescription)
+F.Intrinsic.Control.EndTry
+Program.Sub.getISOCodes.End
+
+Program.Sub.Comments.Start
+${$0$}$CON_UPDATE_EXCHANGE_RATES$}$SUPERVSR$}$18/01/2015$}$False
+Program.Sub.Comments.End
+
